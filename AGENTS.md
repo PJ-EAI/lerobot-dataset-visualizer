@@ -120,6 +120,17 @@ https://huggingface.co/datasets/{org}/{dataset}/resolve/main/{path}
 
 Built by `buildVersionedUrl(repoId, version, path)`. The `version` param is accepted but currently unused in the URL (always `main` revision).
 
+## Local (on-disk) datasets
+
+Development-only feature: the viewer can also open datasets on the machine it runs on. `LOCAL_DATASETS=auto` (default) enables it outside production; `1`/`0` force it. **It must stay off in a deployed build** — the routes read arbitrary local directories.
+
+- A local dataset is a directory with `meta/info.json`, in either layout LeRobot leaves on disk: `<root>/<org>/<name>/` (`local_dir` download) or `<root>/hub/datasets--<org>--<name>/snapshots/<sha>/` (hub cache).
+- **Hub-cache files are symlinks into a sibling `blobs/`** — outside the snapshot root. Any containment check must allow the container directory too (`allowedRealBases` in `src/lib/localDatasetServer.ts`), or those datasets read as empty.
+- Addressed as `/local/<token>/episode_N`, where `<token>` is the absolute path in base64url. Stateless on purpose: no registry, so links survive restarts. `local` is a reserved org.
+- **Everything the client reads is redirected by swapping a base URL, not by a parallel reader.** The whole app derives URLs from the repoId via `datasetBaseUrl` / `datasetEndpoint` / `datasetFetchHeaders` (`src/utils/datasetSource.ts`): `local/<token>` → our own `/api/lh/...`, anything else → huggingface.co, byte-identically to before. `@huggingface/lerobot` needs no shim because every URL it produces already flows through `fileUrl()`.
+- `src/app/api/lh/datasets/[org]/[dataset]/resolve/[revision]/[...path]/route.ts` re-implements the Hub's `<base>/datasets/{repoId}/resolve/{revision}/{path}` shape with Range/206/416 and HEAD. **`content-range` on a 206 is load-bearing**: it is how the package and hyparquet learn a file's size. Content types come from an allowlist (unlisted → `application/octet-stream`) — this route is same-origin with the app, so serving a stray `.html` naturally would be XSS.
+- `getEpisodeData` HEAD-probes videos for local datasets only, dropping any whose file isn't on disk and reporting them as `missingCameras`. Local copies are often downloaded without `videos/` while `info.json` still names a `video_path`.
+
 ## Excluded columns (not shown in charts)
 
 Reserved/bookkeeping columns from lerobot — see `EXCLUDED_COLUMNS` in `src/utils/constants.ts`:

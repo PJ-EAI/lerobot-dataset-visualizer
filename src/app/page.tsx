@@ -3,8 +3,19 @@ import { useEffect, useRef, useState, useCallback, Suspense } from "react";
 import { useRouter } from "next/navigation";
 import { useSearchParams } from "next/navigation";
 import { authHeaders } from "@/utils/auth";
+import { localDatasetHref, looksLikeLocalPath } from "@/utils/localDataset";
 import HfAuthButton from "@/components/hf-auth-button";
 import { Spinner, ThemeToggle } from "@/components/ui";
+
+type LocalDataset = {
+  name: string;
+  token: string;
+  path: string;
+  version: string | null;
+  totalEpisodes: number | null;
+  robotType: string | null;
+  hasVideos: boolean;
+};
 
 export default function Home() {
   return (
@@ -100,7 +111,29 @@ function HomeInner() {
   const [activeIndex, setActiveIndex] = useState(-1);
   const [isLoading, setIsLoading] = useState(false);
   const [hasFetched, setHasFetched] = useState(false);
+  const [localDatasets, setLocalDatasets] = useState<LocalDataset[]>([]);
+  const [localEnabled, setLocalEnabled] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Local datasets only exist when the server can read this machine's disk, which it reports itself —
+  // a production deployment answers `enabled: false` and the section never renders.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/local/datasets")
+      .then((res) => res.json())
+      .then((data: { enabled?: boolean; datasets?: LocalDataset[] }) => {
+        if (cancelled) return;
+        setLocalEnabled(Boolean(data.enabled));
+        setLocalDatasets(data.datasets ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setLocalEnabled(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!query.trim()) {
@@ -156,13 +189,43 @@ function HomeInner() {
     [router],
   );
 
+  /**
+   * A path is resolved by the server so a wrong one explains itself (no `meta/info.json`) instead of
+   * landing on a blank 404 page.
+   */
+  const openLocalPath = useCallback(
+    async (input: string) => {
+      setSearchError(null);
+      setShowSuggestions(false);
+      try {
+        const res = await fetch(
+          `/api/local/resolve?path=${encodeURIComponent(input)}`,
+        );
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          setSearchError(data.error ?? "Could not open that path.");
+          return;
+        }
+        router.push(localDatasetHref(data.dataset.token));
+      } catch {
+        setSearchError("Could not reach the local dataset service.");
+      }
+    },
+    [router],
+  );
+
   const handleSubmit = (e: { preventDefault: () => void }) => {
     e.preventDefault();
     const target =
       activeIndex >= 0 && suggestions[activeIndex]
         ? suggestions[activeIndex]
         : query.trim();
-    if (target) navigate(target);
+    if (!target) return;
+    if (looksLikeLocalPath(target)) {
+      void openLocalPath(target);
+      return;
+    }
+    navigate(target);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -239,10 +302,17 @@ function HomeInner() {
               <input
                 type="text"
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setSearchError(null);
+                }}
                 onKeyDown={handleKeyDown}
                 onFocus={() => query.trim() && setShowSuggestions(true)}
-                placeholder="Enter a dataset id, e.g. lerobot/pusht"
+                placeholder={
+                  localEnabled
+                    ? "Dataset id (lerobot/pusht) or a local path (/home/…) "
+                    : "Enter a dataset id, e.g. lerobot/pusht"
+                }
                 aria-label="Dataset id"
                 className="w-full rounded-lg border border-line bg-[var(--surface-1)] py-3 pl-10 pr-4 text-base text-fg shadow-sm transition-colors placeholder:text-fg-faint focus:border-accent focus:outline-none focus:ring-2 focus:ring-[var(--accent-ring)]"
                 autoComplete="off"
@@ -299,6 +369,15 @@ function HomeInner() {
             </button>
           </form>
 
+          {searchError && (
+            <p
+              role="alert"
+              className="mt-3 max-w-xl rounded-lg border border-line bg-[var(--surface-1)] px-3 py-2 text-sm text-fg-soft"
+            >
+              {searchError}
+            </p>
+          )}
+
           {/* Example Datasets */}
           <div className="mt-6 flex flex-col items-center gap-3">
             <p className="text-xs font-medium uppercase tracking-widest text-fg-faint">
@@ -326,6 +405,62 @@ function HomeInner() {
               <span aria-hidden="true">→</span>
             </a>
           </div>
+
+          {/* Local datasets: present only when the server can read this machine's disk. */}
+          {localEnabled && (
+            <div className="mt-10 w-full max-w-2xl">
+              <p className="text-xs font-medium uppercase tracking-widest text-fg-faint">
+                Local datasets
+              </p>
+              {localDatasets.length === 0 ? (
+                <p className="mt-3 text-sm text-fg-muted">
+                  None found. Download one into{" "}
+                  <code className="font-mono text-xs">
+                    ~/.cache/huggingface/lerobot/
+                  </code>
+                  , point{" "}
+                  <code className="font-mono text-xs">LOCAL_DATASETS_DIR</code>{" "}
+                  at a folder, or type an absolute path above.
+                </p>
+              ) : (
+                <ul className="mt-3 flex flex-col gap-2 text-left">
+                  {localDatasets.map((ds) => (
+                    <li key={ds.token}>
+                      <button
+                        type="button"
+                        onClick={() => navigate(localDatasetHref(ds.token))}
+                        className="w-full rounded-lg border border-line bg-[var(--surface-1)] px-4 py-3 transition-all hover:border-accent hover:bg-accent/10 active:scale-[0.99]"
+                      >
+                        <span className="flex flex-wrap items-baseline gap-x-2">
+                          <span className="text-sm font-medium text-fg">
+                            {ds.name}
+                          </span>
+                          <span className="text-xs text-fg-faint">
+                            {[
+                              ds.version,
+                              ds.totalEpisodes !== null
+                                ? `${ds.totalEpisodes} episodes`
+                                : null,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </span>
+                          {!ds.hasVideos && (
+                            <span className="text-xs text-fg-faint">
+                              · no camera data downloaded
+                            </span>
+                          )}
+                        </span>
+                        <span className="mt-0.5 block truncate font-mono text-[11px] text-fg-faint">
+                          {ds.path}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </section>
 
         {/* Demo */}

@@ -798,6 +798,18 @@ function EpisodeViewerInner({
                 />
               )}
 
+              {(data?.missingCameras?.length ?? 0) > 0 && (
+                <p className="mb-6 rounded-lg border border-line bg-[var(--surface-1)] px-4 py-3 text-sm text-fg-muted">
+                  No camera data on disk for{" "}
+                  <span className="font-mono text-xs">
+                    {data?.missingCameras?.join(", ")}
+                  </span>
+                  . This local copy was downloaded without its{" "}
+                  <span className="font-mono text-xs">videos/</span> folder —
+                  charts and statistics below still work.
+                </p>
+              )}
+
               {/* Language Instruction */}
               {task && (
                 <div className="mb-6 panel p-4">

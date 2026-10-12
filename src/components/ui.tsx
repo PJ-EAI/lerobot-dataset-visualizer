@@ -2,6 +2,7 @@
 
 import React from "react";
 import { setTheme, useTheme } from "@/utils/theme";
+import { displayDatasetId, isLocalRepoId } from "@/utils/localDataset";
 
 /**
  * Shared building blocks for the analysis tabs (Statistics, Filtering, Frames, Action Insights), so
@@ -136,6 +137,7 @@ export function EpisodeHeader({
   repoId: string;
   episodeId: number;
 }) {
+  const displayId = displayDatasetId(repoId);
   return (
     <div className="flex items-center gap-4">
       <a
@@ -152,14 +154,24 @@ export function EpisodeHeader({
         />
       </a>
       <div className="min-w-0">
-        <a
-          href={`https://huggingface.co/datasets/${repoId}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-fg hover:text-accent-fg transition-colors"
-        >
-          <p className="text-base font-medium truncate">{repoId}</p>
-        </a>
+        {isLocalRepoId(repoId) ? (
+          // No Hub page to link to: show the path on disk instead of a dead link.
+          <p
+            className="text-base font-medium truncate font-mono"
+            title={displayId}
+          >
+            {displayId}
+          </p>
+        ) : (
+          <a
+            href={`https://huggingface.co/datasets/${repoId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-fg hover:text-accent-fg transition-colors"
+          >
+            <p className="text-base font-medium truncate">{repoId}</p>
+          </a>
+        )}
         <p className="text-[10px] uppercase tracking-wide text-fg-faint mt-0.5 tabular">
           Episode · {episodeId}
         </p>

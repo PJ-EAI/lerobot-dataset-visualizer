@@ -30,14 +30,10 @@ import {
   parseInfo,
 } from "@huggingface/lerobot";
 import type { LeRobotEpisode, LeRobotFrames } from "@huggingface/lerobot";
-import { authHeaders, getAuthToken } from "@/utils/auth";
+import { datasetEndpoint, datasetFetchHeaders } from "@/utils/datasetSource";
+import { isLocalRepoId } from "@/utils/localDataset";
 
 const SERIES_NAME_DELIMITER = CHART_CONFIG.SERIES_NAME_DELIMITER;
-
-/** `DATASET_URL` points at `<endpoint>/datasets`; the package wants the endpoint. */
-const HUB_ENDPOINT = (
-  process.env.DATASET_URL || "https://huggingface.co/datasets"
-).replace(/\/datasets\/?$/, "");
 
 type RangeEntry =
   | { ok: true; body: ArrayBuffer; status: number; contentRange: string | null }
@@ -125,12 +121,13 @@ const leRobotDatasets = new Map<string, LeRobotDataset>();
  * are fixed at construction and signing in must take effect.
  */
 function leRobotDataset(repoId: string): LeRobotDataset {
-  const key = `${repoId}\n${getAuthToken() ?? ""}`;
+  const headers = datasetFetchHeaders(repoId);
+  const key = `${repoId}\n${headers.Authorization ?? ""}`;
   let dataset = leRobotDatasets.get(key);
   if (!dataset) {
     dataset = new LeRobotDataset(repoId, {
-      endpoint: HUB_ENDPOINT,
-      additionalFetchHeaders: authHeaders(),
+      endpoint: datasetEndpoint(repoId),
+      additionalFetchHeaders: headers,
       fetch: rangeCachedFetch,
     });
     leRobotDatasets.set(key, dataset);
@@ -206,6 +203,39 @@ function toEpisodeMetadataV3(episode: LeRobotEpisode): EpisodeMetadataV3 {
   };
 }
 
+/**
+ * Splits a local dataset's cameras into the ones whose video files exist and the ones that were
+ * never downloaded, by asking our own file route. Hub datasets are returned untouched: their videos
+ * are always present, and probing them would add a request per camera to every episode load.
+ */
+async function dropUnavailableLocalVideos(
+  repoId: string,
+  videosInfo: VideoInfo[],
+): Promise<{ videosInfo: VideoInfo[]; missingCameras: string[] }> {
+  if (!isLocalRepoId(repoId) || videosInfo.length === 0) {
+    return { videosInfo, missingCameras: [] };
+  }
+
+  const present = await Promise.all(
+    videosInfo.map(async (video) => {
+      try {
+        return (await fetch(video.url, { method: "HEAD", cache: "no-store" }))
+          .ok;
+      } catch {
+        return false;
+      }
+    }),
+  );
+
+  const available: VideoInfo[] = [];
+  const missingCameras: string[] = [];
+  videosInfo.forEach((video, index) => {
+    if (present[index]) available.push(video);
+    else missingCameras.push(video.filename);
+  });
+  return { videosInfo: available, missingCameras };
+}
+
 export type CameraInfo = { name: string; width: number; height: number };
 
 export type DatasetDisplayInfo = {
@@ -279,6 +309,12 @@ export type EpisodeData = {
    * events compatible with the writer in lerobot#3471.
    */
   frameTimestamps?: number[];
+  /**
+   * Camera keys whose video files aren't on disk. Local copies are often downloaded without their
+   * `videos/` tree while `info.json` still names a `video_path`, so the viewer says so rather than
+   * showing a player that can only fail. Empty/absent for Hub datasets.
+   */
+  missingCameras?: string[];
 };
 
 type EpisodeMetadataV3 = {
@@ -587,6 +623,12 @@ export async function getEpisodeData(
       }
     }
 
+    const videos = await dropUnavailableLocalVideos(repoId, result.videosInfo);
+    result.videosInfo = videos.videosInfo;
+    if (videos.missingCameras.length > 0) {
+      result.missingCameras = videos.missingCameras;
+    }
+
     return result;
   } catch (err) {
     if (!(err instanceof NoEpisodesError)) {
@@ -618,7 +660,7 @@ function isV2IndexContiguous(
   if (!contiguous) {
     const read = (start: number, end?: number) =>
       fetchRange(url, start, end, {
-        additionalFetchHeaders: authHeaders(),
+        additionalFetchHeaders: datasetFetchHeaders(repoId),
       }).then(({ bytes }) => new TextDecoder().decode(bytes));
     const headRead = read(0, 4095);
     /// The Hub answers a suffix longer than the file with a 416; the head then holds all of it.
